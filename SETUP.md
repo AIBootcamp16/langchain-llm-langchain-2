@@ -18,10 +18,17 @@ pip install -r requirements.txt
 `.env` 파일을 프로젝트 루트에 생성:
 
 ```bash
-OPENROUTER_API_KEY=your_api_key_here
+# 필수
+OPENROUTER_API_KEY=your_openrouter_api_key
+
+# 선택 (LangSmith 모니터링)
+LANGCHAIN_API_KEY=your_langsmith_api_key
+LANGCHAIN_PROJECT=justi-q
 ```
 
-OpenRouter API 키는 https://openrouter.ai 에서 발급받으세요.
+### API 키 발급처
+- **OpenRouter**: https://openrouter.ai (필수)
+- **LangSmith**: https://smith.langchain.com → Settings → API Keys (선택)
 
 ## 4. 벡터 DB 설정
 
@@ -51,6 +58,17 @@ python main.py --query "폭행죄 처벌 기준은?"
 streamlit run app.py
 ```
 
+## 6. LangSmith 모니터링 (선택)
+
+LangSmith를 설정하면 RAG 파이프라인의 실행 로그를 실시간으로 확인할 수 있습니다.
+
+1. https://smith.langchain.com 에서 계정 생성
+2. Settings → API Keys에서 키 발급
+3. `.env` 파일에 `LANGCHAIN_API_KEY` 추가
+4. Streamlit 재시작 후 질문하면 자동으로 트레이싱
+
+트레이스 확인: https://smith.langchain.com → Tracing → `justi-q` 프로젝트
+
 ## 문제 해결
 
 ### ModuleNotFoundError
@@ -61,3 +79,8 @@ pip install -r requirements.txt
 
 ### ChromaDB 오류
 `chroma_db/` 폴더 삭제 후 다시 인덱싱하거나 공유된 DB 사용
+
+### LangSmith 트레이싱 안 됨
+1. `.env`에 `LANGCHAIN_API_KEY` 있는지 확인
+2. Streamlit 완전 종료 후 재시작
+3. https://smith.langchain.com 에서 `justi-q` 프로젝트 확인
