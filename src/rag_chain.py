@@ -3,6 +3,7 @@ RAG 체인
 - OpenRouter를 통한 LLM 연결
 - 검색 + 답변 생성 파이프라인
 - LangSmith 자동 트레이싱
+- 하이브리드 검색 지원 (BM25 + 벡터 + RRF + 리랭킹)
 """
 
 import os
@@ -13,6 +14,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langsmith import traceable
 
 from vectorstore import VectorStore
+from retriever import HybridRetriever, create_hybrid_retriever
 
 load_dotenv()
 
@@ -67,10 +69,23 @@ class RAGChain:
     def __init__(
         self,
         vectorstore: VectorStore,
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        use_hybrid: bool = False,
+        documents: List[Dict[str, Any]] = None,
+        use_reranker: bool = True
     ):
         self.vectorstore = vectorstore
         self.temperature = temperature
+        self.use_hybrid = use_hybrid
+        self.hybrid_retriever = None
+
+        # 하이브리드 검색 설정
+        if use_hybrid:
+            self.hybrid_retriever = create_hybrid_retriever(
+                vectorstore=vectorstore,
+                documents=documents,
+                use_reranker=use_reranker
+            )
 
         # LLM 설정 가져오기 (OpenRouter, OpenAI, Solar 자동 감지)
         llm_config = get_llm_config()
@@ -112,20 +127,51 @@ class RAGChain:
 
         return "\n---\n".join(context_parts)
 
+    def enable_hybrid_search(self, documents: List[Dict[str, Any]], use_reranker: bool = True):
+        """하이브리드 검색 활성화 (BM25 인덱싱 포함)"""
+        self.use_hybrid = True
+        self.hybrid_retriever = create_hybrid_retriever(
+            vectorstore=self.vectorstore,
+            documents=documents,
+            use_reranker=use_reranker
+        )
+        print("하이브리드 검색이 활성화되었습니다.")
+
     @traceable(name="rag_query")
     def query(
         self,
         question: str,
         n_results: int = 5,
-        filter_type: Optional[str] = None
+        filter_type: Optional[str] = None,
+        use_hybrid: Optional[bool] = None
     ) -> Dict[str, Any]:
         """질문에 대한 답변 생성"""
+        # 하이브리드 검색 사용 여부 결정
+        should_use_hybrid = use_hybrid if use_hybrid is not None else self.use_hybrid
+
         # 1. 관련 문서 검색
-        search_results = self.vectorstore.search(
-            query=question,
-            n_results=n_results,
-            filter_type=filter_type
-        )
+        if should_use_hybrid and self.hybrid_retriever:
+            search_results = self.hybrid_retriever.search(
+                query=question,
+                top_k=n_results,
+                filter_type=filter_type
+            )
+            # 하이브리드 결과 포맷 통일
+            search_results = [
+                {
+                    "id": r["id"],
+                    "content": r["content"],
+                    "metadata": r["metadata"],
+                    "distance": 1 - r.get("rerank_score", r.get("rrf_score", 0.5))
+                }
+                for r in search_results
+            ]
+        else:
+            search_results = self.vectorstore.search(
+                query=question,
+                n_results=n_results,
+                filter_type=filter_type
+            )
 
         if not search_results:
             return {
