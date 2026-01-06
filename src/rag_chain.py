@@ -13,6 +13,17 @@ from vectorstore import VectorStore
 
 load_dotenv()
 
+# LangSmith 설정
+def setup_langsmith():
+    """LangSmith 트레이싱 설정"""
+    if os.getenv("LANGCHAIN_API_KEY"):
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT", "justi-q")
+        return True
+    return False
+
+LANGSMITH_ENABLED = setup_langsmith()
+
 
 def get_api_key() -> str:
     """API 키 가져오기 (환경변수 또는 Streamlit secrets)"""
