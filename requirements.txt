@@ -22,5 +22,9 @@ tqdm>=4.65.0
 # Monitoring
 langsmith>=0.1.0
 
+# Evaluation
+ragas>=0.1.0
+datasets>=2.14.0
+
 # Frontend
 streamlit>=1.30.0
