@@ -39,6 +39,8 @@ class QAItem:
 class QADataLoader:
     """Training QA 데이터 로더"""
 
+    EVAL_SET_PATH = Path("data/eval_set.json")  # 고정 평가 세트 경로
+
     def __init__(self, qa_base_path: str = "data/Training/2_labeled_data"):
         self.qa_base_path = Path(qa_base_path)
         self.qa_folders = {
@@ -110,6 +112,107 @@ class QADataLoader:
             else:
                 stats[doc_type] = 0
         return stats
+
+    def create_eval_set(
+        self,
+        sample_size: int = 50,
+        doc_types: List[str] = None,
+        seed: int = 42,
+        output_path: Path = None
+    ) -> List[QAItem]:
+        """
+        고정 평가 세트 생성 및 저장
+
+        Args:
+            sample_size: 총 샘플 크기
+            doc_types: 포함할 문서 타입 (None이면 전체)
+            seed: 랜덤 시드 (재현성 보장)
+            output_path: 저장 경로 (None이면 기본 경로)
+
+        Returns:
+            생성된 QAItem 리스트
+        """
+        random.seed(seed)
+        output_path = output_path or self.EVAL_SET_PATH
+
+        # 전체 QA 로드
+        all_items = self.load_qa_files(doc_types=doc_types, max_per_type=None)
+
+        if len(all_items) <= sample_size:
+            sampled = all_items
+        else:
+            sampled = random.sample(all_items, sample_size)
+
+        # JSON으로 저장
+        eval_data = {
+            "metadata": {
+                "sample_size": len(sampled),
+                "seed": seed,
+                "doc_types": doc_types or list(self.qa_folders.keys()),
+                "created_at": pd.Timestamp.now().isoformat()
+            },
+            "items": [
+                {
+                    "question": item.question,
+                    "ground_truth": item.ground_truth,
+                    "doc_type": item.doc_type,
+                    "doc_id": item.doc_id
+                }
+                for item in sampled
+            ]
+        }
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(eval_data, f, ensure_ascii=False, indent=2)
+
+        print(f"고정 평가 세트 생성 완료: {output_path}")
+        print(f"  - 샘플 수: {len(sampled)}")
+        print(f"  - 시드: {seed}")
+
+        return sampled
+
+    def load_eval_set(self, eval_path: Path = None) -> List[QAItem]:
+        """
+        저장된 고정 평가 세트 로드
+
+        Args:
+            eval_path: 평가 세트 경로 (None이면 기본 경로)
+
+        Returns:
+            QAItem 리스트
+        """
+        eval_path = eval_path or self.EVAL_SET_PATH
+
+        if not eval_path.exists():
+            raise FileNotFoundError(
+                f"평가 세트 파일이 없습니다: {eval_path}\n"
+                f"먼저 create_eval_set()으로 생성하세요."
+            )
+
+        with open(eval_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        items = [
+            QAItem(
+                question=item["question"],
+                ground_truth=item["ground_truth"],
+                doc_type=item["doc_type"],
+                doc_id=item["doc_id"]
+            )
+            for item in data["items"]
+        ]
+
+        print(f"고정 평가 세트 로드: {eval_path}")
+        print(f"  - 샘플 수: {len(items)}")
+        print(f"  - 생성일: {data['metadata'].get('created_at', 'N/A')}")
+
+        return items
+
+    def has_eval_set(self, eval_path: Path = None) -> bool:
+        """평가 세트 존재 여부 확인"""
+        eval_path = eval_path or self.EVAL_SET_PATH
+        return eval_path.exists()
 
 
 class RAGASEvaluator:
@@ -295,7 +398,9 @@ def run_evaluation(
     qa_base_path: str = "data/Training/2_labeled_data",
     sample_size: int = 50,
     doc_types: List[str] = None,
-    compare: bool = False
+    compare: bool = False,
+    use_fixed_eval_set: bool = True,
+    create_if_missing: bool = True
 ):
     """
     평가 실행 헬퍼 함수
@@ -303,11 +408,12 @@ def run_evaluation(
     Args:
         rag_chain: RAGChain 인스턴스
         qa_base_path: QA 데이터 경로
-        sample_size: 평가 샘플 크기
+        sample_size: 평가 샘플 크기 (고정 세트 생성 시에만 사용)
         doc_types: 평가할 문서 타입 (None이면 전체)
         compare: 벡터 vs 하이브리드 비교 여부
+        use_fixed_eval_set: 고정 평가 세트 사용 여부 (기본 True)
+        create_if_missing: 고정 세트가 없으면 생성 (기본 True)
     """
-    # QA 데이터 로드
     qa_loader = QADataLoader(qa_base_path)
 
     print("=== QA 데이터 통계 ===")
@@ -315,7 +421,24 @@ def run_evaluation(
     for doc_type, count in stats.items():
         print(f"  {doc_type}: {count}개")
 
-    qa_items = qa_loader.load_qa_files(doc_types=doc_types, max_per_type=sample_size)
+    # 고정 평가 세트 사용
+    if use_fixed_eval_set:
+        if qa_loader.has_eval_set():
+            qa_items = qa_loader.load_eval_set()
+        elif create_if_missing:
+            print("\n고정 평가 세트가 없습니다. 새로 생성합니다...")
+            qa_items = qa_loader.create_eval_set(
+                sample_size=sample_size,
+                doc_types=doc_types
+            )
+        else:
+            raise FileNotFoundError(
+                "고정 평가 세트가 없습니다. create_eval_set()으로 먼저 생성하세요."
+            )
+    else:
+        # 기존 방식 (랜덤 샘플링) - 비권장
+        print("\n⚠️  랜덤 샘플링 사용 중 - 일관된 평가를 위해 고정 세트 사용을 권장합니다.")
+        qa_items = qa_loader.load_qa_files(doc_types=doc_types, max_per_type=sample_size)
 
     if not qa_items:
         print("평가할 QA 데이터가 없습니다.")
@@ -325,11 +448,11 @@ def run_evaluation(
     evaluator = RAGASEvaluator(rag_chain)
 
     if compare:
-        # 비교 평가
-        results = evaluator.compare_methods(qa_items, sample_size=sample_size)
+        # 비교 평가 (고정 세트 전체 사용)
+        results = evaluator.compare_methods(qa_items, sample_size=len(qa_items))
     else:
-        # 단일 평가
-        results = evaluator.evaluate(qa_items, sample_size=sample_size)
+        # 단일 평가 (고정 세트 전체 사용)
+        results = evaluator.evaluate(qa_items, sample_size=len(qa_items))
         print("\n=== 평가 결과 ===")
         for metric, score in results["scores"].items():
             print(f"  {metric}: {score:.4f}")
