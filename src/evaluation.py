@@ -16,13 +16,17 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from ragas import evaluate
-from ragas.metrics import (
-    faithfulness,
-    answer_relevancy,
-    context_precision,
-    context_recall,
-)
+from ragas.metrics._faithfulness import Faithfulness
+from ragas.metrics._answer_relevance import AnswerRelevancy
+from ragas.metrics._context_precision import ContextPrecision
+from ragas.metrics._context_recall import ContextRecall
 from datasets import Dataset
+
+# 메트릭 인스턴스 생성
+faithfulness = Faithfulness()
+answer_relevancy = AnswerRelevancy()
+context_precision = ContextPrecision()
+context_recall = ContextRecall()
 
 load_dotenv()
 
