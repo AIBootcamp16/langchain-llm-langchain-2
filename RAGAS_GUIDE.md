@@ -11,10 +11,20 @@ python evaluation.py
 
 `.env` 파일에 다음 키가 필요합니다:
 
+### RAGAS 평가용 (필수)
 | 키 | 용도 | 필수 |
 |----|------|------|
-| `OPENAI_API_KEY` | RAGAS 평가용 LLM (gpt-4o-mini) | O |
-| `OPENROUTER_API_KEY` | RAG 답변 생성용 LLM | O |
+| `OPENAI_API_KEY` | RAGAS 평가용 LLM (gpt-4o-mini) | **O** |
+
+### RAG 답변 생성용 (하나만 선택)
+| 키 | 용도 | 비고 |
+|----|------|------|
+| `OPENROUTER_API_KEY` | OpenRouter (무료 모델 사용 가능) | 우선순위 1 |
+| `OPENAI_API_KEY` | OpenAI GPT | 우선순위 2 |
+| `SOLAR_API_KEY` | Upstage Solar | 우선순위 3 |
+
+> **참고**: RAG는 위 키 중 하나만 있으면 자동으로 감지합니다.
+> OpenAI 키만 있어도 RAG + RAGAS 평가 모두 가능합니다.
 
 ## 주의사항
 
