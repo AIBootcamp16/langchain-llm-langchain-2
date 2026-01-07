@@ -20,15 +20,52 @@ from ragas.metrics._faithfulness import Faithfulness
 from ragas.metrics._answer_relevance import AnswerRelevancy
 from ragas.metrics._context_precision import ContextPrecision
 from ragas.metrics._context_recall import ContextRecall
+from ragas.llms import LangchainLLMWrapper
+from ragas.embeddings import BaseRagasEmbeddings
 from datasets import Dataset
+from langchain_openai import ChatOpenAI
+from sentence_transformers import SentenceTransformer
 
-# 메트릭 인스턴스 생성
-faithfulness = Faithfulness()
-answer_relevancy = AnswerRelevancy()
-context_precision = ContextPrecision()
-context_recall = ContextRecall()
+load_dotenv(override=True)  # 환경변수 덮어쓰기 활성화
 
-load_dotenv()
+# RAGAS용 LLM 설정 (OpenAI 직접 사용)
+ragas_llm = LangchainLLMWrapper(
+    ChatOpenAI(
+        model="gpt-4o-mini",
+        api_key=os.getenv("OPENAI_API_KEY"),
+        temperature=0
+    )
+)
+
+
+# RAGAS용 커스텀 Embedding 클래스 (SentenceTransformer 사용)
+class SentenceTransformerEmbeddings(BaseRagasEmbeddings):
+    def __init__(self, model_name: str = "intfloat/multilingual-e5-large"):
+        self.model = SentenceTransformer(model_name)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.model.encode(text, normalize_embeddings=True).tolist()
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.model.encode(texts, normalize_embeddings=True).tolist()
+
+    async def aembed_query(self, text: str) -> list[float]:
+        return self.embed_query(text)
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.embed_documents(texts)
+
+
+ragas_embeddings = SentenceTransformerEmbeddings()
+
+# 메트릭 인스턴스 생성 (LLM + Embedding 명시적 설정)
+faithfulness = Faithfulness(llm=ragas_llm)
+answer_relevancy = AnswerRelevancy(llm=ragas_llm, embeddings=ragas_embeddings)
+context_precision = ContextPrecision(llm=ragas_llm)
+context_recall = ContextRecall(llm=ragas_llm)
+
+# 프로젝트 루트 경로 (src/ 상위 디렉토리)
+PROJECT_ROOT = Path(__file__).parent.parent
 
 
 @dataclass
@@ -43,9 +80,11 @@ class QAItem:
 class QADataLoader:
     """Training QA 데이터 로더"""
 
-    EVAL_SET_PATH = Path("data/eval_set.json")  # 고정 평가 세트 경로
+    EVAL_SET_PATH = PROJECT_ROOT / "eval_set.json"  # 고정 평가 세트 경로
 
-    def __init__(self, qa_base_path: str = "data/Training/2_labeled_data"):
+    def __init__(self, qa_base_path: str = None):
+        if qa_base_path is None:
+            qa_base_path = PROJECT_ROOT / "data" / "Training" / "2_labeled_data"
         self.qa_base_path = Path(qa_base_path)
         self.qa_folders = {
             "judgement": "TL_judgement_QA",
@@ -259,21 +298,12 @@ class RAGASEvaluator:
             # RAG 쿼리 실행
             result = self.rag_chain.query(
                 question=item.question,
-                n_results=5,
-                use_hybrid=use_hybrid
+                n_results=5
             )
 
             questions.append(item.question)
             answers.append(result["answer"])
             ground_truths.append(item.ground_truth)
-
-            # 컨텍스트 수집 (검색된 문서 내용)
-            context_list = []
-            if "sources" in result:
-                # RAGChain의 결과에서 컨텍스트 추출
-                # sources에는 doc_id만 있으므로, 실제 content를 가져와야 함
-                # 임시로 빈 컨텍스트 처리 (실제 구현 시 수정 필요)
-                pass
 
             # 검색 결과에서 직접 컨텍스트 가져오기
             search_results = self.rag_chain.vectorstore.search(
@@ -326,12 +356,20 @@ class RAGASEvaluator:
             metrics=self.metrics
         )
 
-        # 결과 정리
+        # 결과 정리 (RAGAS 버전에 따라 결과 형식이 다름)
+        def get_score(results, key):
+            val = results[key]
+            if isinstance(val, list):
+                # 리스트면 평균 계산
+                valid_vals = [v for v in val if v is not None and not (isinstance(v, float) and v != v)]
+                return sum(valid_vals) / len(valid_vals) if valid_vals else 0.0
+            return float(val)
+
         scores = {
-            "faithfulness": float(results["faithfulness"]),
-            "answer_relevancy": float(results["answer_relevancy"]),
-            "context_precision": float(results["context_precision"]),
-            "context_recall": float(results["context_recall"]),
+            "faithfulness": get_score(results, "faithfulness"),
+            "answer_relevancy": get_score(results, "answer_relevancy"),
+            "context_precision": get_score(results, "context_precision"),
+            "context_recall": get_score(results, "context_recall"),
         }
 
         # 종합 점수 계산
@@ -399,7 +437,7 @@ class RAGASEvaluator:
 
 def run_evaluation(
     rag_chain,
-    qa_base_path: str = "data/Training/2_labeled_data",
+    qa_base_path: str = None,
     sample_size: int = 50,
     doc_types: List[str] = None,
     compare: bool = False,
@@ -465,23 +503,51 @@ def run_evaluation(
 
 
 if __name__ == "__main__":
-    # 테스트용 실행
-    print("=== RAGAS 평가 시스템 테스트 ===\n")
+    import argparse
 
-    # QA 데이터 로더 테스트
-    qa_loader = QADataLoader()
+    parser = argparse.ArgumentParser(description="RAGAS RAG 평가 시스템")
+    parser.add_argument("--test", action="store_true", help="테스트 모드 (데이터 로드만)")
+    parser.add_argument("--compare", action="store_true", help="벡터 vs 하이브리드 비교")
+    parser.add_argument("--sample-size", type=int, default=50, help="평가 샘플 크기")
+    args = parser.parse_args()
 
-    print("QA 데이터 통계:")
-    stats = qa_loader.get_stats()
-    for doc_type, count in stats.items():
-        print(f"  {doc_type}: {count}개")
+    if args.test:
+        # 테스트 모드: 데이터 로드만
+        print("=== RAGAS 평가 시스템 테스트 ===\n")
+        qa_loader = QADataLoader()
 
-    # 샘플 로드 테스트
-    print("\n샘플 QA 로드 (타입별 5개):")
-    samples = qa_loader.load_qa_files(max_per_type=5)
+        print("QA 데이터 통계:")
+        stats = qa_loader.get_stats()
+        for doc_type, count in stats.items():
+            print(f"  {doc_type}: {count}개")
 
-    if samples:
-        print(f"\n첫 번째 샘플:")
-        print(f"  질문: {samples[0].question[:100]}...")
-        print(f"  정답: {samples[0].ground_truth[:100]}...")
-        print(f"  타입: {samples[0].doc_type}")
+        print("\n샘플 QA 로드 (타입별 5개):")
+        samples = qa_loader.load_qa_files(max_per_type=5)
+
+        if samples:
+            print(f"\n첫 번째 샘플:")
+            print(f"  질문: {samples[0].question[:100]}...")
+            print(f"  정답: {samples[0].ground_truth[:100]}...")
+            print(f"  타입: {samples[0].doc_type}")
+    else:
+        # 실제 평가 실행
+        print("=== RAGAS RAG 평가 시작 ===\n")
+
+        from vectorstore import VectorStore
+        from rag_chain import RAGChain
+
+        # VectorStore 및 RAGChain 초기화
+        print("VectorStore 로딩 중...")
+        vs = VectorStore()
+
+        print("RAGChain 초기화 중...")
+        rag = RAGChain(vs)
+        print(f"  - LLM: {rag.provider} / {rag.model}")
+
+        # 평가 실행
+        print("\n평가 시작...")
+        results = run_evaluation(
+            rag_chain=rag,
+            sample_size=args.sample_size,
+            compare=args.compare
+        )
