@@ -53,7 +53,6 @@ build/
 # 데이터 (용량 큼)
 # =========================
 data/
-!data/eval_set.json
 data_sampled/
 *.zip
 
