@@ -115,38 +115,40 @@ class VectorStore:
 
         print(f"벡터 스토어 저장 완료 (총 문서 수: {self.collection.count()})")
 
-    def search(
-        self,
-        query: str,
-        n_results: int = 5,
-        filter_type: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """유사 문서 검색"""
-        # 쿼리 임베딩
+    def search(self, query: str, n_results: int = 5, filter_type: Optional[str] = None):
         query_embedding = self._get_query_embedding(query)
 
-        # 필터 설정
-        where_filter = None
-        if filter_type:
-            where_filter = {"type": filter_type}
+        where_filter = {"type": filter_type} if filter_type else None
 
-        # 검색
+        fetch_k = n_results * 5
         results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=n_results,
+            n_results=fetch_k,
             where=where_filter,
             include=["documents", "metadatas", "distances"]
         )
 
-        # 결과 정리
         search_results = []
+        seen_doc_ids = set()
+
         for i in range(len(results["ids"][0])):
+            meta = results["metadatas"][0][i] or {}
+            doc_id = meta.get("doc_id")
+
+            if doc_id and doc_id in seen_doc_ids:
+                continue
+            if doc_id:
+                seen_doc_ids.add(doc_id)
+
             search_results.append({
                 "id": results["ids"][0][i],
                 "content": results["documents"][0][i],
-                "metadata": results["metadatas"][0][i],
+                "metadata": meta,
                 "distance": results["distances"][0][i]
             })
+
+            if len(search_results) >= n_results:
+                break
 
         return search_results
 

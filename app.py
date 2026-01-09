@@ -81,6 +81,44 @@ def main():
         st.info("먼저 `python main.py --index` 로 인덱싱을 실행해주세요.")
         return
 
+    def _one_line_summary(src: dict, max_len: int = 70) -> str:
+        # title이 있으면 title 우선, 없으면 본문 첫 줄/앞부분
+        title = (src.get("title") or "").strip()
+        if title:
+            s = title
+        else:
+            content = (src.get("content") or "").strip()
+            first_line = content.splitlines()[0].strip() if content else ""
+            s = first_line if first_line else content[:max_len]
+        s = s.replace("\n", " ").strip()
+        return (s[:max_len] + "…") if len(s) > max_len else s
+
+    def _render_sources(sources: list, key_prefix: str):
+        if not sources:
+            return
+        st.markdown(f"📚 참고 문서 ({len(sources)}건)")
+        for i, src in enumerate(sources, 1):
+            doc_type = src.get("type", "문서")
+            doc_id = src.get("doc_id", "unknown")
+            sim = None
+            if src.get("distance") is not None:
+                sim = 1 - float(src["distance"])
+            summary = _one_line_summary(src)
+
+            # 한 줄 요약(항목) + 클릭하면 본문이 펼쳐지는 토글
+            header = f"{i}. [{doc_type}] {doc_id} — {summary}"
+            if sim is not None:
+                header += f" (유사도: {sim:.2%})"
+
+            with st.expander(header, expanded=False):
+                # 읽기 전용 본문 표시: textarea 대신 markdown/code 사용
+                content = src.get("content", "")
+                if content:
+                    st.code(content, language=None)
+                else:
+                    st.caption("본문 내용이 없습니다.")
+
+
     # 채팅 히스토리 초기화
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -89,10 +127,8 @@ def main():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            if "sources" in message:
-                with st.expander("📚 참고 문서"):
-                    for src in message["sources"]:
-                        st.markdown(f"- **[{src['type']}]** {src['doc_id']}")
+            if "sources" in message and message["sources"]:
+                _render_sources(message["sources"], key_prefix=f"h_{len(st.session_state.messages)}")
 
     # 사용자 입력
     if prompt := st.chat_input("형사법 관련 질문을 입력하세요..."):
@@ -109,15 +145,21 @@ def main():
             st.markdown(result["answer"])
 
             # 참고 문서 표시
-            with st.expander("📚 참고 문서"):
-                for src in result["sources"]:
-                    st.markdown(f"- **[{src['type']}]** {src['doc_id']} (유사도: {1 - src['distance']:.2%})")
+            _render_sources(result.get("sources", []), key_prefix="c")
 
+        seen = set()
+        unique_sources = []
+        for s in result["sources"]:
+            if s["doc_id"] in seen:
+                continue
+            seen.add(s["doc_id"])
+            unique_sources.append(s)
+            
         # 어시스턴트 메시지 저장
         st.session_state.messages.append({
             "role": "assistant",
             "content": result["answer"],
-            "sources": result["sources"]
+            "sources": unique_sources
         })
 
 

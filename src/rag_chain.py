@@ -7,6 +7,7 @@ RAG 체인
 """
 
 import os
+import re
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -110,6 +111,7 @@ class RAGChain:
 3. 판례가 있다면 사건번호와 함께 인용해주세요.
 4. 확실하지 않은 내용은 추측하지 마세요.
 5. 답변은 명확하고 이해하기 쉽게 작성해주세요.
+6. 답변에는 한글, 숫자, 공백, 일반 기호만 사용하세요.
 """
 
     def _format_context(self, search_results: List[Dict[str, Any]]) -> str:
@@ -200,14 +202,41 @@ class RAGChain:
         ]
 
         response = self.llm.invoke(messages)
+        
+        def contains_non_korean_noise(text: str) -> bool:
+            """
+            감지 대상:
+            - 한자(CJK)
+            - 일본어(히라가나, 가타카나)
+            - 베트남어 등 라틴 문자 결합부호 (성조 문자)
+            """
+            return bool(re.search(
+                r"[\u4E00-\u9FFF\u3040-\u30FF\u0300-\u036F]",
+                text
+            ))
+
         answer = response.content
 
+        if contains_non_korean_noise(answer):
+            repair_msg = HumanMessage(content=f"""
+        너의 이전 답변에 한글이 아닌 다른 언어(한자/일본어/베트남어 등)이 섞여 있음.
+        아래 내용을 **의미 유지**하면서 **순수 한국어로만** 다시 작성해.
+        - 한자/일본어/베트남어 섞이지 않도록 함
+        - 출력 형식 및 의미 유지
+
+        [이전 답변]
+        {answer}
+        """)
+            response2 = self.llm.invoke([SystemMessage(content=self.system_prompt), repair_msg])
+            answer = response2.content
+            
         # 4. 결과 반환
         sources = [
             {
                 "doc_id": r["metadata"]["doc_id"],
                 "type": r["metadata"]["type_name"],
-                "distance": r["distance"]
+                "distance": r["distance"],
+                "content": r["content"], 
             }
             for r in search_results
         ]
