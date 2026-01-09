@@ -80,7 +80,7 @@ class QAItem:
 class QADataLoader:
     """Training QA 데이터 로더"""
 
-    EVAL_SET_PATH = PROJECT_ROOT / "eval_set.json"  # 고정 평가 세트 경로
+    EVAL_SET_PATH = PROJECT_ROOT / "eval_set_ragas.json"  # 고정 평가 세트 경로
 
     def __init__(self, qa_base_path: str = None):
         if qa_base_path is None:
