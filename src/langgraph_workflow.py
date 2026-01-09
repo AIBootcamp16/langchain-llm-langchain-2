@@ -1,18 +1,17 @@
-# src/langgraph_workflow.py
 """
-LangGraph workflow (minimal)
+LangGraph workflow (minimal + safe retry)
 - retrieve node: VectorStore.search로 컨텍스트 수집
-- generate node: RAGChain의 LLM으로 답변 생성
-- hallucination_check node: 답변이 컨텍스트 근거 기반인지 간단 검사
+- generate node: (question + context)로 답변 생성
+- hallucination_check node: 답변이 컨텍스트 근거 기반인지 검사
+- regenerate_strict node: 근거에 없는 내용은 제거하고 1회만 보수적으로 재생성
 
-주의:
-- 지금은 "복잡한 루프/에이전트" 없이, 3노드 직선 + 검사만 구성합니다.
-- 이후에 원하면: (검사 Fail -> query rewrite -> retrieve 재시도) 루프를 붙이면 됩니다.
+구성:
+retrieve -> generate -> hallucination_check -> (grounded면 END, 아니면 regenerate_strict 1회) -> hallucination_check -> END
 """
 
 from __future__ import annotations
 
-from typing import TypedDict, List, Dict, Any, Optional, Literal
+from typing import TypedDict, List, Dict, Any, Optional
 
 from langgraph.graph import StateGraph, END
 
@@ -29,8 +28,8 @@ class GraphState(TypedDict, total=False):
     filter_type: Optional[str]
 
     # retrieval 결과
-    documents: List[Dict[str, Any]]  # VectorStore.search 결과 리스트
-    context: str  # LLM에 넣을 컨텍스트(문자열)
+    documents: List[Dict[str, Any]]
+    context: str
 
     # generation 결과
     answer: str
@@ -38,7 +37,11 @@ class GraphState(TypedDict, total=False):
     # hallucination check 결과
     grounded: bool
     issues: List[str]
-    final: str  # 최종 출력(안전장치 반영)
+    final: str
+
+    # retry 제어
+    retry_count: int
+    max_retries: int
 
 
 # -----------------------------
@@ -67,25 +70,15 @@ def retrieve_node(state: GraphState, *, vectorstore: VectorStore) -> GraphState:
     docs = vectorstore.search(question, n_results=n_results, filter_type=filter_type)
     ctx = _format_context(docs) if docs else ""
 
-    return {
-        "documents": docs,
-        "context": ctx,
-    }
+    return {"documents": docs, "context": ctx}
 
 
 def generate_node(state: GraphState, *, rag_chain: RAGChain) -> GraphState:
-    """
-    기존 RAGChain.query()를 그대로 쓰면 또 내부에서 retrieval을 다시 합니다.
-    그래서 여기서는 RAGChain의 llm만 재사용해서,
-    (question + state.context)로 답변을 한 번에 생성합니다.
-    """
     question = state["question"]
     context = state.get("context", "")
 
     if not context.strip():
-        return {
-            "answer": "관련 문서를 찾을 수 없습니다.",
-        }
+        return {"answer": "관련 문서를 찾을 수 없습니다."}
 
     system = rag_chain.system_prompt.strip()
     prompt = f"""{system}
@@ -103,16 +96,10 @@ def generate_node(state: GraphState, *, rag_chain: RAGChain) -> GraphState:
 
     resp = rag_chain.llm.invoke(prompt)
     answer = getattr(resp, "content", str(resp)).strip()
-
     return {"answer": answer}
 
 
 def hallucination_check_node(state: GraphState, *, rag_chain: RAGChain) -> GraphState:
-    """
-    매우 단순한 근거성 검사.
-    - 컨텍스트에 근거 없는 단정(형량/조문/사실)이 섞였는지 점검
-    - Fail이면 경고를 붙여서 final에 반영
-    """
     question = state["question"]
     context = state.get("context", "")
     answer = state.get("answer", "")
@@ -152,19 +139,18 @@ def hallucination_check_node(state: GraphState, *, rag_chain: RAGChain) -> Graph
     resp = rag_chain.llm.invoke(judge_prompt)
     raw = getattr(resp, "content", str(resp)).strip()
 
-    # JSON 파싱을 최대한 안전하게
     grounded = True
     issues: List[str] = []
 
     try:
         import json
 
-        # 코드블록 제거(혹시 모를 경우)
-        cleaned = raw
+        cleaned = raw.strip()
+        # ```json ... ``` 방어
         if cleaned.startswith("```"):
-            cleaned = cleaned.strip().strip("`")
-            # ```json ... ``` 같은 형태면 앞줄 제거
-            cleaned = cleaned.replace("json", "", 1).strip()
+            cleaned = cleaned.strip().strip("`").strip()
+            if cleaned.lower().startswith("json"):
+                cleaned = cleaned[4:].strip()
 
         data = json.loads(cleaned)
         grounded = bool(data.get("grounded", False))
@@ -172,7 +158,6 @@ def hallucination_check_node(state: GraphState, *, rag_chain: RAGChain) -> Graph
         if not isinstance(issues, list):
             issues = [str(issues)]
     except Exception:
-        # 파싱 실패 시 보수적으로 Fail 처리
         grounded = False
         issues = ["검증 JSON 파싱 실패(모델 출력 형식 불일치).", f"raw={raw[:300]}..."]
 
@@ -182,35 +167,80 @@ def hallucination_check_node(state: GraphState, *, rag_chain: RAGChain) -> Graph
         warn = "\n".join([f"- {x}" for x in issues]) if issues else "- 근거 부족/환각 가능성"
         final = (
             answer
-            + "\n\n"
-            + "⚠️ 근거 기반 검증에서 문제가 감지되었습니다. 아래 항목을 확인하세요:\n"
+            + "\n\n⚠️ 근거 기반 검증에서 문제가 감지되었습니다. 아래 항목을 확인하세요:\n"
             + warn
         )
 
-    return {
-        "grounded": grounded,
-        "issues": issues,
-        "final": final,
-    }
+    return {"grounded": grounded, "issues": issues, "final": final}
+
+
+def regenerate_strict_node(state: GraphState, *, rag_chain: RAGChain) -> GraphState:
+    """
+    환각 감지 후, 근거에만 기반해서 보수적으로 1회 재생성
+    """
+    question = state["question"]
+    context = state.get("context", "")
+    retry_count = int(state.get("retry_count", 0))
+
+    if not context.strip():
+        return {"answer": "관련 문서를 찾을 수 없습니다.", "retry_count": retry_count + 1}
+
+    strict_prompt = f"""
+너는 법률 AI다.
+아래 제공된 문서 내용에 **명시적으로 포함된 내용만** 사용해서 답변하라.
+추론, 일반화, 추정은 금지한다.
+근거가 부족하면 반드시 '답변 불가'라고 말하라.
+
+[질문]
+{question}
+
+[근거 문서]
+{context}
+""".strip()
+
+    resp = rag_chain.llm.invoke(strict_prompt)
+    answer = getattr(resp, "content", str(resp)).strip()
+
+    return {"answer": answer, "retry_count": retry_count + 1}
 
 
 # -----------------------------
 # 4) Graph 조립
 # -----------------------------
-def build_workflow(
-    vectorstore: VectorStore,
-    rag_chain: RAGChain,
-):
+def decide_after_hallucination(state: GraphState) -> str:
+    if state.get("grounded", False):
+        return "end"
+
+    if int(state.get("retry_count", 0)) < int(state.get("max_retries", 0)):
+        return "regenerate_strict"
+
+    return "end"
+
+
+def build_workflow(vectorstore: VectorStore, rag_chain: RAGChain):
     graph = StateGraph(GraphState)
 
     graph.add_node("retrieve", lambda s: retrieve_node(s, vectorstore=vectorstore))
     graph.add_node("generate", lambda s: generate_node(s, rag_chain=rag_chain))
     graph.add_node("hallucination_check", lambda s: hallucination_check_node(s, rag_chain=rag_chain))
+    graph.add_node("regenerate_strict", lambda s: regenerate_strict_node(s, rag_chain=rag_chain))
 
     graph.set_entry_point("retrieve")
     graph.add_edge("retrieve", "generate")
     graph.add_edge("generate", "hallucination_check")
-    graph.add_edge("hallucination_check", END)
+
+    # ✅ 조건 분기 (핵심)
+    graph.add_conditional_edges(
+        "hallucination_check",
+        decide_after_hallucination,
+        {
+            "regenerate_strict": "regenerate_strict",
+            "end": END,
+        },
+    )
+
+    # strict 재생성 후 다시 검증
+    graph.add_edge("regenerate_strict", "hallucination_check")
 
     return graph.compile()
 
@@ -227,5 +257,7 @@ def run_workflow(
         "question": question,
         "n_results": n_results,
         "filter_type": filter_type,
+        "retry_count": 0,
+        "max_retries": 1,  # strict regenerate 1회만 허용
     }
     return app.invoke(state)
