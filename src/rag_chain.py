@@ -12,7 +12,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langsmith import traceable
 
-from vectorstore import VectorStore
+from src.vectorstore import VectorStore
 
 load_dotenv()
 
