@@ -73,10 +73,17 @@ class JustiQ:
             collection_name=self.collection_name,
             persist_dir=self.persist_dir
         )
+        
+        # NOTE:
+        # RAGChain.__init__ signature was updated.
+        # The 'model' argument is now resolved internally via get_llm_config(),
+        # so passing it here caused a TypeError and was removed.
+
         self.rag_chain = RAGChain(
             vectorstore=self.vectorstore,
-            model=self.model
+            temperature=0.3
         )
+
         print(f"벡터 스토어 로드 완료 (문서 수: {self.vectorstore.collection.count()})")
 
     def query(self, question: str, n_results: int = 5) -> dict:
