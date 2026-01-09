@@ -28,13 +28,13 @@ class EvalSample:
     doc_id: str
 
 
-def load_eval_set(eval_set_path: str = "eval_set_clean.json") -> List[EvalSample]:
+def load_eval_set(eval_set_path: str = "eval_set_retrieval.json") -> List[EvalSample]:
     """
-    eval_set_clean.json 파일을 로드하고 평가 샘플 생성
-    (law_name, article 필드가 이미 추출되어 있는 clean 데이터셋 사용)
+    eval_set_retrieval.json 파일을 로드하고 평가 샘플 생성
+    (law_name, article 필드가 이미 추출되어 있는 데이터셋 사용)
 
     Args:
-        eval_set_path: eval_set_clean.json 파일 경로
+        eval_set_path: eval_set_retrieval.json 파일 경로
     """
     print(f"📂 평가 데이터 로드 중: {eval_set_path}")
 
@@ -212,8 +212,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Retrieval 평가")
-    parser.add_argument("--eval-set", type=str, default="eval_set_clean.json",
-                        help="평가 데이터 경로 (기본: eval_set_clean.json)")
+    parser.add_argument("--eval-set", type=str, default="eval_set_retrieval.json",
+                        help="평가 데이터 경로 (기본: eval_set_retrieval.json)")
     parser.add_argument("--top-k", type=int, default=3,
                         help="검색할 문서 수")
     parser.add_argument("--quiet", action="store_true",
