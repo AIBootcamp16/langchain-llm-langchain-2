@@ -3,9 +3,13 @@ langchain>=0.1.0
 langchain-community>=0.0.10
 chromadb>=0.4.22
 
-# Embeddings
+# Embeddings & Reranker
 sentence-transformers>=2.2.2
 torch>=2.0.0
+
+# BM25 + Korean Tokenizer
+rank-bm25>=0.2.2
+kiwipiepy>=0.17.0
 
 # OpenRouter LLM
 openai>=1.0.0

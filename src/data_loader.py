@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Any
@@ -23,6 +24,26 @@ class LegalDataLoader:
             "interpretation": "해석"
         }
 
+        # judgement 인적사항/메타성 라인 감지용 (공백/특수문자 변형 대응)
+        self.judgement_party_patterns = [
+            r"【\s*피\s*고\s*인\s*】",
+            r"【\s*항\s*소\s*인\s*】",
+            r"【\s*검\s*사\s*】",
+            r"【\s*검.*】",  # 예: 【검○】
+            r"【\s*변\s*호\s*인\s*】",
+            r"【\s*변호인\s*】",
+        ]
+
+        # decision 인적사항/메타성 라인 감지용 (공백/철자 변형 대응)
+        self.decision_party_patterns = [
+            r"청\s+구\s+인",
+            r"피\s+청\s+구\s+인",
+            r"피\s+청\s+구",
+            r"변\s+호\s+사",
+            r"재\s+판\s+장",
+            r"재\s+판\s+관",
+        ]
+
     def load_csv(self, file_path: Path) -> Dict[str, Any]:
         """단일 CSV 파일 로드 및 파싱"""
         try:
@@ -33,20 +54,55 @@ class LegalDataLoader:
         # 컬럼명 정리
         df.columns = df.columns.str.strip()
 
+        # 문장번호 기준 정렬 (원문 흐름 복원)
+        if '문장번호' in df.columns:
+            df = df.sort_values('문장번호')
+
         # 문서 ID 추출
         doc_id = file_path.stem  # 파일명에서 확장자 제거
 
-        # 내용 합치기
+        # 내용 합치기 (+ party_lines 제거)
+        party_lines = []
+        content_lines = []
+
+        # judgement/decision 분기용 (폴더명 기반)
+        data_type = file_path.parent.name
+
         if '내용' in df.columns:
-            content = '\n'.join(df['내용'].dropna().astype(str).tolist())
+            for v in df['내용'].dropna().astype(str).tolist():
+                text = v.strip()
+                if not text:
+                    continue
+
+                is_party = False
+
+                if data_type == "judgement":
+                    for pat in self.judgement_party_patterns:
+                        if re.search(pat, text):
+                            is_party = True
+                            break
+
+                elif data_type == "decision":
+                    for pat in self.decision_party_patterns:
+                        if re.search(pat, text):
+                            is_party = True
+                            break
+
+                if is_party:
+                    party_lines.append(text)
+                else:
+                    content_lines.append(text)
         else:
             # 모든 컬럼의 데이터를 합침
-            content = '\n'.join(df.iloc[:, -1].dropna().astype(str).tolist())
+            content_lines = df.iloc[:, -1].dropna().astype(str).tolist()
+
+        content = '\n'.join(content_lines)
 
         # 메타데이터 추출
         metadata = {
             "doc_id": doc_id,
             "file_path": str(file_path),
+            "party_lines": party_lines
         }
 
         # 구분 정보가 있으면 추출 (문자열로 변환)

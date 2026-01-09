@@ -3,7 +3,10 @@ Justi-Q: 형사법 RAG 시스템
 메인 실행 파일
 """
 
+import os
+import shutil
 import sys
+import argparse # 인자값 처리를 위해 필요
 sys.path.append("src")
 
 from data_loader import LegalDataLoader
@@ -18,7 +21,8 @@ class JustiQ:
         self,
         data_dir: str = "data_sampled",
         collection_name: str = "legal_documents",
-        persist_dir: str = "chroma_db",
+        # persist_dir: str = "chroma_db",
+        persist_dir: str = "chroma_db_v3", # 기본값
         model: str = "meta-llama/llama-3.3-70b-instruct:free"
     ):
         """
@@ -37,6 +41,8 @@ class JustiQ:
         self.vectorstore = None
         self.rag_chain = None
 
+        print(f"📂 타겟 Vector DB 경로: {self.persist_dir}")
+
     def index(self, chunk_size: int = 1000, overlap: int = 200) -> dict:
         """
         데이터 인덱싱: 데이터 로드 → 청킹 → 벡터 DB 저장
@@ -49,8 +55,14 @@ class JustiQ:
             인덱싱 결과 통계
         """
         print("=" * 60)
-        print("데이터 인덱싱 시작")
+        print(f"데이터 인덱싱 시작 -> {self.persist_dir}")
         print("=" * 60)
+        
+        # [중요] 지정된 DB 폴더가 이미 있으면 삭제 (초기화)
+        if os.path.exists(self.persist_dir):
+            print(f"🧹 기존 벡터 스토어 삭제 중... ({self.persist_dir})")
+            shutil.rmtree(self.persist_dir)
+            print("✨ 초기화 완료!")
 
         # 데이터 로드 및 청킹
         self.loader = LegalDataLoader(self.data_dir)
@@ -160,11 +172,14 @@ def main():
     parser.add_argument("--query", type=str, help="단일 질문 실행")
     parser.add_argument("--interactive", action="store_true", help="대화형 모드")
     parser.add_argument("--data-dir", type=str, default="data_sampled", help="데이터 디렉토리")
-
+    
+    # [추가된 옵션] DB 경로를 터미널에서 입력받음
+    parser.add_argument("--db-path", type=str, default="chroma_db", help="Vector DB 저장 경로 (예: chroma_db_v2)")
+    
     args = parser.parse_args()
 
-    # JustiQ 인스턴스 생성
-    justiq = JustiQ(data_dir=args.data_dir)
+    # JustiQ 인스턴스 생성 시 db-path 전달
+    justiq = JustiQ(data_dir=args.data_dir, persist_dir=args.db_path)
 
     if args.index:
         # 인덱싱 모드

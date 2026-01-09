@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from tqdm import tqdm
 
+import json
 import torch
 import chromadb
 from chromadb.config import Settings
@@ -31,7 +32,8 @@ class VectorStore:
     def __init__(
         self,
         collection_name: str = "legal_documents",
-        persist_dir: str = "chroma_db",
+        # persist_dir: str = "chroma_db",
+        persist_dir: str = "chroma_db_v3",
         embedding_model: str = "intfloat/multilingual-e5-large"
     ):
         self.collection_name = collection_name
@@ -93,6 +95,12 @@ class VectorStore:
             ids = [chunk["metadata"]["chunk_id"] for chunk in batch]
             documents = [chunk["content"] for chunk in batch]
             metadatas = [chunk["metadata"] for chunk in batch]
+            
+            # Chroma metadata는 list/dict 저장 불가 -> JSON 문자열로 변환
+            for m in metadatas:
+                for k, v in list(m.items()):
+                    if isinstance(v, (list, dict)):
+                        m[k] = json.dumps(v, ensure_ascii=False)
 
             # 임베딩 생성
             embeddings = self._get_embeddings(documents)
