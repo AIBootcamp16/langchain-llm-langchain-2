@@ -2,19 +2,21 @@
 Retrieval 정확도 평가 스크립트
 - eval_set.json 기반으로 검색 Hit Rate 측정
 - 정답(ground_truth)에 포함된 법령 조항이 검색 결과에 있는지 확인
+- 벡터 검색, BM25, 하이브리드 검색 비교 가능
 """
 
 import json
 import re
 import sys
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Callable
 from dataclasses import dataclass
 
 # 프로젝트 루트를 path에 추가
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from vectorstore import VectorStore
+from retriever import HybridRetriever, KiwiBM25Retriever
 
 
 @dataclass
@@ -75,22 +77,24 @@ def load_eval_set(eval_set_path: str = "eval_set_retrieval.json") -> List[EvalSa
 
 
 def run_evaluation(
-    vectorstore: VectorStore,
+    search_fn: Callable[[str, int], List[Dict[str, Any]]],
     samples: List[EvalSample],
     top_k: int = 5,
-    verbose: bool = True
+    verbose: bool = True,
+    mode_name: str = "Vector"
 ) -> Dict:
     """
     Retrieval 평가 실행
 
     Args:
-        vectorstore: VectorStore 인스턴스
+        search_fn: 검색 함수 (query, top_k) -> results
         samples: 평가 샘플 리스트
         top_k: 검색할 문서 개수
         verbose: 오답 상세 출력 여부
+        mode_name: 검색 모드 이름 (출력용)
     """
     print(f"\n{'='*50}")
-    print(f"🚀 Retrieval 평가 시작 (top_k={top_k})")
+    print(f"🚀 Retrieval 평가 시작 [{mode_name}] (top_k={top_k})")
     print(f"{'='*50}\n")
 
     total_count = len(samples)
@@ -103,7 +107,7 @@ def run_evaluation(
     for i, sample in enumerate(samples):
         # 검색 수행
         try:
-            results = vectorstore.search(sample.question, n_results=top_k)
+            results = search_fn(sample.question, top_k)
         except Exception as e:
             print(f"❌ [ERROR] 문제 {i+1} 검색 중 에러: {e}")
             continue
@@ -175,7 +179,7 @@ def run_evaluation(
 
     # 최종 리포트
     print(f"\n{'='*50}")
-    print(f"📊 [최종 결과 리포트]")
+    print(f"📊 [최종 결과 리포트] - {mode_name}")
     print(f"{'='*50}")
     print(f"총 평가 문제 수: {total_count}개")
     print(f"✅ 정답 (Hit): {correct_count}개")
@@ -191,6 +195,7 @@ def run_evaluation(
     print(f"{'='*50}")
 
     return {
+        "mode": mode_name,
         "total": total_count,
         "correct": correct_count,
         "errors": len(errors),
@@ -208,6 +213,24 @@ def save_results(results: Dict, output_path: str = "retrieval_eval_results.json"
     print(f"\n결과 저장됨: {output_path}")
 
 
+def load_bm25_documents(vectorstore: VectorStore) -> List[Dict[str, Any]]:
+    """ChromaDB에서 모든 문서를 로드하여 BM25 인덱싱용으로 반환"""
+    print("📚 BM25 인덱싱을 위해 ChromaDB에서 문서 로드 중...")
+
+    # ChromaDB에서 모든 문서 가져오기
+    all_docs = vectorstore.collection.get(include=["documents", "metadatas"])
+
+    documents = []
+    for i, (doc, meta) in enumerate(zip(all_docs["documents"], all_docs["metadatas"])):
+        documents.append({
+            "content": doc,
+            "metadata": meta
+        })
+
+    print(f"  {len(documents)}개 문서 로드 완료")
+    return documents
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -220,6 +243,11 @@ if __name__ == "__main__":
                         help="오답 상세 출력 안함")
     parser.add_argument("--save", action="store_true",
                         help="결과를 JSON으로 저장")
+    parser.add_argument("--mode", type=str, default="vector",
+                        choices=["vector", "bm25", "hybrid", "all"],
+                        help="검색 모드: vector, bm25, hybrid, all (기본: vector)")
+    parser.add_argument("--no-reranker", action="store_true",
+                        help="하이브리드 검색에서 리랭커 비활성화")
     args = parser.parse_args()
 
     samples = load_eval_set(args.eval_set)
@@ -231,12 +259,83 @@ if __name__ == "__main__":
     print("\n🔧 VectorStore 초기화 중...")
     vs = VectorStore()
 
-    results = run_evaluation(
-        vectorstore=vs,
-        samples=samples,
-        top_k=args.top_k,
-        verbose=not args.quiet
-    )
+    all_results = {}
 
+    # 벡터 검색
+    if args.mode in ["vector", "all"]:
+        def vector_search(query: str, top_k: int) -> List[Dict]:
+            return vs.search(query, n_results=top_k)
+
+        results = run_evaluation(
+            search_fn=vector_search,
+            samples=samples,
+            top_k=args.top_k,
+            verbose=not args.quiet,
+            mode_name="Vector"
+        )
+        all_results["vector"] = results
+
+    # BM25 또는 하이브리드 검색 시 문서 로드
+    if args.mode in ["bm25", "hybrid", "all"]:
+        documents = load_bm25_documents(vs)
+
+    # BM25 검색
+    if args.mode in ["bm25", "all"]:
+        print("\n🔧 BM25 검색기 초기화 중...")
+        bm25_retriever = KiwiBM25Retriever(documents)
+
+        def bm25_search(query: str, top_k: int) -> List[Dict]:
+            return bm25_retriever.search(query, top_k=top_k)
+
+        results = run_evaluation(
+            search_fn=bm25_search,
+            samples=samples,
+            top_k=args.top_k,
+            verbose=not args.quiet,
+            mode_name="BM25"
+        )
+        all_results["bm25"] = results
+
+    # 하이브리드 검색
+    if args.mode in ["hybrid", "all"]:
+        print("\n🔧 하이브리드 검색기 초기화 중...")
+        hybrid_retriever = HybridRetriever(
+            vectorstore=vs,
+            documents=documents,
+            use_reranker=not args.no_reranker
+        )
+
+        def hybrid_search(query: str, top_k: int) -> List[Dict]:
+            return hybrid_retriever.search(
+                query,
+                top_k=top_k,
+                use_reranker=not args.no_reranker
+            )
+
+        mode_name = "Hybrid" if not args.no_reranker else "Hybrid (no reranker)"
+        results = run_evaluation(
+            search_fn=hybrid_search,
+            samples=samples,
+            top_k=args.top_k,
+            verbose=not args.quiet,
+            mode_name=mode_name
+        )
+        all_results["hybrid"] = results
+
+    # 모든 모드 비교 요약
+    if args.mode == "all":
+        print(f"\n{'='*60}")
+        print("📊 [검색 모드 비교 요약]")
+        print(f"{'='*60}")
+        print(f"{'모드':<20} {'Hit Rate':<15} {'정답/전체':<15}")
+        print("-" * 60)
+        for mode, result in all_results.items():
+            print(f"{result['mode']:<20} {result['hit_rate']:.2f}%{'':<8} {result['correct']}/{result['total']}")
+        print(f"{'='*60}")
+
+    # 결과 저장
     if args.save:
-        save_results(results)
+        if args.mode == "all":
+            save_results(all_results, "retrieval_eval_results_all.json")
+        else:
+            save_results(all_results.get(args.mode, {}))
