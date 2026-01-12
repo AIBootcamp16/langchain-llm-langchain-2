@@ -1,6 +1,6 @@
 # Justi-Q 🏛️
 
-> 대한민국 형사법 전문 법률 AI 어시스턴트(랭체인 2조 팀 프로젝트)
+> 대한민국 형사법 전문 법률 AI 어시스턴트 개발 (랭체인 2조 팀 프로젝트)
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![LangChain](https://img.shields.io/badge/LangChain-0.3+-green.svg)](https://langchain.com/)
