@@ -20,6 +20,9 @@ import streamlit as st
 from vectorstore import VectorStore
 from rag_chain import RAGChain
 
+# ✅ LangGraph workflow 추가
+from langgraph_workflow import run_workflow
+
 
 # 페이지 설정
 st.set_page_config(
@@ -127,8 +130,16 @@ def main():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            if "sources" in message and message["sources"]:
-                _render_sources(message["sources"], key_prefix=f"h_{len(st.session_state.messages)}")
+            if "sources" in message:
+                with st.expander("📚 참고 문서"):
+                    for src in message["sources"]:
+                        st.markdown(f"- **[{src['type']}]** {src['doc_id']}")
+
+            # ✅ (선택) grounded/issues 표시용
+            if message.get("grounded") is False and message.get("issues"):
+                with st.expander("⚠️ 근거 검증 이슈"):
+                    for it in message["issues"]:
+                        st.markdown(f"- {it}")
 
     # 사용자 입력
     if prompt := st.chat_input("형사법 관련 질문을 입력하세요..."):
@@ -140,26 +151,56 @@ def main():
         # AI 응답 생성
         with st.chat_message("assistant"):
             with st.spinner("답변 생성 중..."):
-                result = rag.query(prompt, n_results=n_results)
+                # ✅ 여기만 핵심 변경: rag.query() -> LangGraph run_workflow()
+                final_state = run_workflow(
+                    question=prompt,
+                    vectorstore=rag.vectorstore,   # RAGChain이 가진 vectorstore 재사용
+                    rag_chain=rag,
+                    n_results=n_results,
+                    filter_type=None,
+                )
 
-            st.markdown(result["answer"])
+            final_text = final_state.get("final", "")
+            st.markdown(final_text)
 
-            # 참고 문서 표시
-            _render_sources(result.get("sources", []), key_prefix="c")
+            # ✅ 참고 문서 표시 (LangGraph state.documents 기반)
+            docs = final_state.get("documents") or []
+            sources = []
+            for d in docs:
+                md = d.get("metadata", {}) or {}
+                sources.append({
+                    "doc_id": md.get("doc_id", "unknown"),
+                    "type": md.get("type_name", "문서"),
+                    "distance": d.get("distance", None),
+                })
 
-        seen = set()
-        unique_sources = []
-        for s in result["sources"]:
-            if s["doc_id"] in seen:
-                continue
-            seen.add(s["doc_id"])
-            unique_sources.append(s)
-            
+            with st.expander("📚 참고 문서"):
+                if not sources:
+                    st.markdown("- (없음)")
+                else:
+                    for src in sources:
+                        dist = src.get("distance")
+                        if isinstance(dist, float):
+                            st.markdown(f"- **[{src['type']}]** {src['doc_id']} (dist: {dist:.4f})")
+                        else:
+                            st.markdown(f"- **[{src['type']}]** {src['doc_id']}")
+
+            # ✅ grounded / issues 표시
+            grounded = final_state.get("grounded", None)
+            issues = final_state.get("issues") or []
+            if grounded is False:
+                st.warning("근거 기반 검증에서 문제가 감지되었습니다.")
+                with st.expander("⚠️ 근거 검증 이슈"):
+                    for it in issues:
+                        st.markdown(f"- {it}")
+
         # 어시스턴트 메시지 저장
         st.session_state.messages.append({
             "role": "assistant",
-            "content": result["answer"],
-            "sources": unique_sources
+            "content": final_text,
+            "sources": sources,
+            "grounded": final_state.get("grounded", None),
+            "issues": issues,
         })
 
 
