@@ -13,8 +13,13 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langsmith import traceable
 
-from vectorstore import VectorStore
-from retriever import HybridRetriever, create_hybrid_retriever
+from src.vectorstore import VectorStore
+
+# NOTE:
+# HybridRetriever / create_hybrid_retriever 는
+# origin/main 브랜치에서 실험 중인 기능입니다.
+# LangGraph workflow 안정화 이후 병합 예정입니다.
+# from retriever import HybridRetriever, create_hybrid_retriever
 
 load_dotenv()
 
